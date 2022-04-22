@@ -62,22 +62,36 @@ Create the name of the service account to use
 {{- end -}}
 
 {{/*
+Base template for building docker image reference
+*/}}
+{{- define "loki.baseImage" }}
+{{- $registry := coalesce .global.registry .loki.registry -}}
+{{- $repository := coalesce .global.repository .loki.repository -}}
+{{- $tag := coalesce .service.tag .loki.tag .defaultVersion | toString -}}
+{{- printf "%s/%s:%s" $registry $repository $tag -}}
+{{- end -}}
+
+{{/*
 Docker image name for Loki
 */}}
 {{- define "loki.lokiImage" -}}
-{{- $registry := coalesce .global.registry .service.registry .loki.registry -}}
-{{- $repository := coalesce .service.repository .loki.repository -}}
-{{- $tag := coalesce .service.tag .loki.tag .defaultVersion | toString -}}
-{{- printf "%s/%s:%s" $registry $repository $tag -}}
+{{- $dict := dict "loki" .Values.loki.image "global" .Values.global.image "defaultVersion" .Chart.AppVersion -}}
+{{- include "loki.baseImage" $dict -}}
+{{- end -}}
+
+{{/*
+Docker image name for enterprise logs
+*/}}
+{{- define "loki.enterpriseImage" -}}
+{{- $dict := dict "loki" .Values.enterprise.image "global" .Values.global.image "defaultVersion" .Values.enterprise.version -}}
+{{- include "loki.baseImage" $dict -}}
 {{- end -}}
 
 {{/*
 Docker image name
 */}}
 {{- define "loki.image" -}}
-{{- $registry := coalesce .global.registry .service.registry -}}
-{{- $tag := .service.tag | toString -}}
-{{- printf "%s/%s:%s" $registry .service.repository (.service.tag | toString) -}}
+{{ -if .Values.enterprise.enabled -}}{{ include "loki.enterpriseImage" }}{{- else -}}{{include "loki.lokiImage" }}{{- end -}}
 {{- end -}}
 
 {{/*

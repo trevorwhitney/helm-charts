@@ -66,33 +66,31 @@ loki:
   # -- Config file contents for Loki
   # @default -- See values.yaml
   config: |
+    {{- if .Values.enterprise.enabled -}}
+    {{- toYaml .Values.enterprise.config | nindent 2}}
+    {{- else }}
     auth_enabled: false
+    {{- end }}
+
+    {{- if .Values.loki.commonConfig}}
+    common:
+    {{- toYaml .Values.loki.commonConfig | nindent 2}}
+    {{- end}}
 
     server:
       http_listen_port: 3100
-
-    distributor:
-      ring:
-        kvstore:
-          store: memberlist
+      grpc_listen_port: 9095
 
     memberlist:
       join_members:
         - {{ include "loki.fullname" . }}-memberlist
 
     ingester:
-      lifecycler:
-        ring:
-          kvstore:
-            store: memberlist
-          replication_factor: 1
       chunk_idle_period: 30m
       chunk_block_size: 262144
       chunk_encoding: snappy
       chunk_retain_period: 1m
       max_transfer_retries: 0
-      wal:
-        dir: /var/loki/wal
 
     limits_config:
       enforce_metric_name: false
@@ -105,6 +103,7 @@ loki:
     schema_config:
     {{- toYaml .Values.loki.schemaConfig | nindent 2}}
     {{- end}}
+
     {{- if .Values.loki.storageConfig}}
     storage_config:
     {{- if .Values.indexGateway.enabled}}
@@ -140,31 +139,33 @@ loki:
       compress_responses: true
       tail_proxy_url: http://{{ include "loki.querierFullname" . }}:3100
 
-    compactor:
-      shared_store: filesystem
-
     ruler:
-      storage:
-        type: local
-        local:
-          directory: /etc/loki/rules
-      ring:
-        kvstore:
-          store: memberlist
-      rule_path: /tmp/loki/scratch
       alertmanager_url: https://alertmanager.xx
       external_url: https://alertmanager.xx
+
+  # -- Check https://grafana.com/docs/loki/latest/configuration/#common_config for more info on how to provide a common configuration
+  commonConfig:
+    path_prefix: /var/loki
+    replication_factor: 3
+    storage:
+      s3:
+        endpoint: '{{ include "enterprise-logs.minio" . }}'
+        bucketnames: enterprise-logs-tsdb
+        secret_access_key: supersecret
+        access_key_id: enterprise-logs
+        s3forcepathstyle: true
+        insecure: true
 
   # -- Check https://grafana.com/docs/loki/latest/configuration/#schema_config for more info on how to configure schemas
   schemaConfig:
     configs:
-    - from: 2020-09-07
-      store: boltdb-shipper
-      object_store: filesystem
-      schema: v11
-      index:
-        prefix: loki_index_
-        period: 24h
+      - from: 2020-09-07
+        store: boltdb-shipper
+        object_store: filesystem
+        schema: v11
+        index:
+          prefix: loki_index_
+          period: 24h
 
   # -- Check https://grafana.com/docs/loki/latest/configuration/#storage_config for more info on how to configure storages
   storageConfig:
@@ -175,14 +176,197 @@ loki:
       cache_ttl: 168h
     filesystem:
       directory: /var/loki/chunks
-# -- Uncomment to configure each storage individually
-#   azure: {}
-#   gcs: {}
-#   s3: {}
-#   boltdb: {}
+  # -- Uncomment to configure each storage individually
+  #   azure: {}
+  #   gcs: {}
+  #   s3: {}
+  #   boltdb: {}
 
   # -- Structured loki configuration, takes precedence over `loki.config`, `loki.schemaConfig`, `loki.storageConfig`
   structuredConfig: {}
+
+enterprise:
+  # Enable enterprise features, license must be provided
+  enabled: false
+  # Default verion of GEL to deploy
+  version: v1.4.0
+  # -- Grafana Enterprise Logs license
+  # In order to use Grafana Enterprise Logs features, you will need to provide
+  # the contents of your Grafana Enterprise Logs license, either by providing the
+  # contents of the license.jwt, or the name Kubernetes Secret that contains your
+  # license.jwt.
+  # To set the license contents, use the flag `--set-file 'license.contents=./license.jwt'`
+  license:
+    contents: "NOTAVALIDLICENSE"
+  # enterprise specific sections of the config.yaml file
+  config:
+    auth_enabled: true
+    auth:
+      type: enterprise
+    license:
+      path: /etc/enterprise-logs/license/license.jwt
+    cluster_name: "{{ .Release.Name }}"
+    admin_client:
+      storage:
+        s3:
+          bucket_name: enterprise-logs-admin
+  image:
+    # -- Docker image repository
+    repository: grafana/enterprise-logs
+    # -- Overrides the image tag whose default is the chart's appVersion
+    tag: v1.4.0
+
+  # -- Configuration for `tokengen` target
+  tokengen:
+    # -- Whether the job should be part of the deployment
+    enable: true
+    # -- Additional CLI arguments for the `tokengen` target
+    extraArgs: {}
+    # -- Additional Kubernetes environment
+    env: []
+    # -- Additional labels for the `tokengen` Job
+    labels: {}
+    # -- Additional annotations for the `tokengen` Job
+    annotations: {}
+    # -- Additional volumes for Pods
+    extraVolumes: []
+    # -- Additional volume mounts for Pods
+    extraVolumeMounts: []
+    # -- Run containers as user `enterprise-logs(uid=10001)`
+    securityContext:
+      runAsNonRoot: true
+      runAsGroup: 10001
+      runAsUser: 10001
+      fsGroup: 10001
+
+  # -- Configuration for the `admin-api` target
+  adminApi:
+    # -- Define the amount of instances
+    replicas: 1
+    # -- Additional CLI arguments for the `admin-api` target
+    extraArgs: {}
+    # -- Additional labels for the `admin-api` Deployment
+    labels: {}
+    # -- Additional annotations for the `admin-api` Deployment
+    annotations: {}
+    # -- Additional labels and annotations for the `admin-api` Service
+    service:
+      labels: {}
+      annotations: {}
+    # -- Run container as user `enterprise-logs(uid=10001)`
+    # `fsGroup` must not be specified, because these security options are applied
+    # on container level not on Pod level.
+    securityContext:
+      runAsNonRoot: true
+      runAsGroup: 10001
+      runAsUser: 10001
+
+    strategy:
+      type: RollingUpdate
+
+    env: []
+
+    persistence:
+      subPath:
+
+    livenessProbe:
+      httpGet:
+        path: /ready
+        port: http-metrics
+      initialDelaySeconds: 45
+
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: http-metrics
+      initialDelaySeconds: 45
+
+    # -- Request and limit Kubernetes resources
+    # -- Values are defined in small.yaml and large.yaml
+    resources: {}
+
+    initContainers: []
+    extraContainers: []
+
+    # -- Additional volumes for Pods
+    extraVolumes: []
+    # -- Additional volume mounts for Pods
+    extraVolumeMounts: []
+
+    # -- Affinity for admin-api Pods
+    affinity: {}
+    # -- Node selector for admin-api Pods
+    nodeSelector: {}
+    # -- Tolerations for admin-api Pods
+    tolerations: []
+    # -- Grace period to allow the admin-api to shutdown before it is killed
+    terminationGracePeriodSeconds: 60
+
+  # -- Configuration for the `gateway` target
+  gateway:
+    # -- Define the amount of instances
+    replicas: 1
+    # -- Additional CLI arguments for the `gateway` target
+    extraArgs: {}
+    # -- Additional labels for the `gateway` Pod
+    labels: {}
+    # -- Additional annotations for the `gateway` Pod
+    annotations: {}
+    # -- Additional labels and annotations for the `gateway` Service
+    service:
+      labels: {}
+      annotations: {}
+    # -- Run container as user `enterprise-logs(uid=10001)`
+    securityContext:
+      runAsNonRoot: true
+      runAsGroup: 10001
+      runAsUser: 10001
+      fsGroup: 10001
+
+    # If you want to use your own proxy URLs, set this to false.
+    useDefaultProxyURLs: true
+
+    strategy:
+      type: RollingUpdate
+
+    livenessProbe:
+      httpGet:
+        path: /ready
+        port: http-metrics
+      initialDelaySeconds: 45
+
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: http-metrics
+      initialDelaySeconds: 45
+
+    # -- Request and limit Kubernetes resources
+    # -- Values are defined in small.yaml and large.yaml
+    resources: {}
+
+    env: []
+
+    persistence:
+      subPath:
+
+    initContainers: []
+    extraContainers: []
+
+    # -- Additional volumes for Pods
+    extraVolumes: []
+    # -- Additional volume mounts for Pods
+    extraVolumeMounts: []
+
+    # -- Affinity for gateway Pods
+    affinity: {}
+    # -- Node selector for gateway Pods
+    nodeSelector: {}
+    # -- Tolerations for gateway Pods
+    tolerations: []
+    # -- Grace period to allow the gateway to shutdown before it is killed
+    terminationGracePeriodSeconds: 60
+
 serviceAccount:
   # -- Specifies whether a ServiceAccount should be created
   create: true
@@ -699,7 +883,7 @@ gateway:
     enabled: false
     # -- Ingress Class Name. MAY be required for Kubernetes versions >= 1.18
     # For example: `ingressClassName: nginx`
-    ingressClassName: ''
+    ingressClassName: ""
 
     # -- Annotations for the gateway ingress
     annotations: {}
@@ -728,6 +912,8 @@ gateway:
     # high CPU load.
     htpasswd: >-
       {{ htpasswd (required "'gateway.basicAuth.username' is required" .Values.gateway.basicAuth.username) (required "'gateway.basicAuth.password' is required" .Values.gateway.basicAuth.password) }}
+
+
     # -- Existing basic auth secret to use. Must contain '.htpasswd'
     existingSecret: null
   # Configures the readiness probe for the gateway
@@ -983,7 +1169,8 @@ ruler:
     # set, choosing the default provisioner (gp2 on AWS, standard on GKE, AWS, and OpenStack).
     storageClass: null
   # -- Directories containing rules files
-  directories: {}
+  directories:
+    {}
     # tenant_foo:
     #   rules1.txt: |
     #     groups:
